@@ -33,3 +33,12 @@ func (s *Stats) updateHandleCount(handleType api.SQLSMALLINT, change int) error 
 	}
 	return nil
 }
+
+// StmtCountSnapshot returns the current statement handle count. Use it
+// instead of copying the Stats struct: a copy also copies the mutex and
+// goes stale as soon as counts change.
+func (s *Stats) StmtCountSnapshot() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.StmtCount
+}

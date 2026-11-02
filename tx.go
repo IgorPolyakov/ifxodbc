@@ -35,13 +35,16 @@ func (c *Conn) Begin() (driver.Tx, error) {
 	if c.tx != nil {
 		return nil, errors.New("already in a transaction")
 	}
-	c.tx = &Tx{c: c}
 	err := c.setAutoCommitAttr(api.SQL_AUTOCOMMIT_OFF)
 	if err != nil {
 		c.bad = true
 		return nil, err
 	}
-	return c.tx, nil
+	// set c.tx only after autocommit is off, so a failed Begin does not
+	// leave the connection in transaction state
+	tx := &Tx{c: c}
+	c.tx = tx
+	return tx, nil
 }
 
 func (c *Conn) endTx(commit bool) error {

@@ -5,6 +5,7 @@
 package odbc
 
 import (
+	"context"
 	"database/sql/driver"
 	"errors"
 	"fmt"
@@ -96,6 +97,13 @@ func (s *ODBCStmt) releaseHandle() error {
 var testingIssue5 bool // used during tests
 
 func (s *ODBCStmt) Exec(args []driver.Value, conn *Conn) error {
+	return s.execContext(context.Background(), args, conn)
+}
+
+func (s *ODBCStmt) execContext(ctx context.Context, args []driver.Value, conn *Conn) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if len(args) != len(s.Parameters) {
 		return fmt.Errorf("wrong number of arguments %d, %d expected", len(args), len(s.Parameters))
 	}
@@ -112,7 +120,13 @@ func (s *ODBCStmt) Exec(args []driver.Value, conn *Conn) error {
 	if testingIssue5 {
 		time.Sleep(10 * time.Microsecond)
 	}
-	ret := api.SQLExecute(s.h)
+	ret, err := s.callContext(ctx, func() api.SQLRETURN { return api.SQLExecute(s.h) })
+	if err != nil {
+		// Execution may have completed with an open cursor despite cancellation.
+		// The watcher has exited, so closing it cannot race with SQLCancel.
+		api.SQLCloseCursor(s.h)
+		return err
+	}
 	if ret == api.SQL_NO_DATA {
 		// success but no data to report
 		return nil
@@ -181,4 +195,11 @@ func (s *ODBCStmt) Cancel() error {
 	}
 
 	return nil
+}
+
+// callContext waits for the cancel watcher before the handle can be reused or
+// released. Diagnostics must be read after this method returns.
+func (s *ODBCStmt) callContext(ctx context.Context, call func() api.SQLRETURN) (api.SQLRETURN, error) {
+	// Do not collect cancellation diagnostics while the native call is running.
+	return callWithContext(ctx, call, func() { api.SQLCancel(s.h) })
 }

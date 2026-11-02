@@ -6,8 +6,10 @@ package odbc
 
 import (
 	"database/sql"
+	"errors"
 	"flag"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -26,8 +28,7 @@ func ifxConnect() (db *sql.DB, stmtCount int, err error) {
 	if err != nil {
 		return nil, 0, err
 	}
-	stats := db.Driver().(*Driver).Stats
-	return db, stats.StmtCount, nil
+	return db, db.Driver().(*Driver).Stats.StmtCountSnapshot(), nil
 }
 
 func TestIFXTime(t *testing.T) {
@@ -56,6 +57,66 @@ func TestIFXTime(t *testing.T) {
 	}
 
 	exec(t, db, "drop table temp")
+}
+
+func TestIFXBeginErr(t *testing.T) {
+	before := ifxStressHandles()
+	dsn := fmt.Sprintf("driver=IBM INFORMIX ODBC DRIVER;server=%s;database=%s;uid=%s;pwd=%s",
+		*ifxsrv, *ifxdb, *ifxuser, *ifxpass)
+	conn, err := drv.Open(dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := conn.(*Conn)
+
+	testBeginErr = errors.New("injected setAutoCommitAttr error")
+	_, err = c.Begin()
+	testBeginErr = nil
+	if err == nil {
+		t.Fatal("expected Begin to fail with the injected error")
+	}
+	if c.tx != nil {
+		t.Fatal("failed Begin left the connection in transaction state")
+	}
+	if !c.bad {
+		t.Fatal("failed Begin must mark the connection bad")
+	}
+	if err := c.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	after := ifxStressHandles()
+	if before != after {
+		t.Errorf("handle leak: %v -> %v", before, after)
+	}
+}
+
+func TestIFXDecimal(t *testing.T) {
+	db, sc, err := ifxConnect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeDB(t, db, sc, sc)
+
+	db.Exec("drop table temp")
+	exec(t, db, "create table temp(id int, big decimal(32,0), frac decimal(16,4))")
+	defer exec(t, db, "drop table temp")
+
+	// 2^53+1 is not representable in float64: reading DECIMAL through
+	// float64 loses the last digit, the exact text must survive instead.
+	const big = "9007199254740993"
+	if _, err := db.Exec("insert into temp (id, big, frac) values (1, ?, ?)", big, "1.0001"); err != nil {
+		t.Fatal(err)
+	}
+	var gotBig, gotFrac string
+	if err := db.QueryRow("select big, frac from temp where id = 1").Scan(&gotBig, &gotFrac); err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(gotBig) != big {
+		t.Errorf("decimal(32,0): want=%v, got=%v", big, gotBig)
+	}
+	if strings.TrimSpace(gotFrac) != "1.0001" {
+		t.Errorf("decimal(16,4): want=1.0001, got=%v", gotFrac)
+	}
 }
 
 func TestIFXColumnTypes(t *testing.T) {
@@ -104,5 +165,9 @@ func TestIFXColumnTypes(t *testing.T) {
 		}
 	}
 
+	// Informix refuses to drop a table that still has an open cursor.
+	if err := rows.Close(); err != nil {
+		t.Fatal(err)
+	}
 	exec(t, db, "drop table temp")
 }

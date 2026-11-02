@@ -49,25 +49,53 @@ func describeColumn(h api.SQLHSTMT, idx int, namebuf []uint16) (namelen int, sql
 	return int(l), sqltype, size, ret
 }
 
+// errDescribeCol is returned by readColumnName when SQLDescribeCol itself
+// fails; the caller is expected to replace it with real diagnostics.
+var errDescribeCol = errors.New("SQLDescribeCol failed")
+
+type describeColFn func(namebuf []uint16) (namelen int, ret api.SQLRETURN)
+
+// readColumnName reads the column name via describe. SQLDescribeCol
+// reports the name length without the terminating NUL and truncates the
+// name to fit the buffer, so the buffer must have room for namelen+1
+// elements once the name is known to be longer than the first guess.
+func readColumnName(describe describeColFn) (string, error) {
+	namebuf := make([]uint16, 150)
+	namelen, ret := describe(namebuf)
+	if ret == api.SQL_SUCCESS_WITH_INFO && namelen >= len(namebuf) {
+		// try again with bigger buffer
+		namebuf = make([]uint16, namelen+1)
+		namelen, ret = describe(namebuf)
+	}
+	if IsError(ret) {
+		return "", errDescribeCol
+	}
+	if namelen >= len(namebuf) {
+		// still complaining about buffer size
+		return "", errors.New("Failed to allocate column name buffer")
+	}
+	return api.UTF16ToString(namebuf[:namelen]), nil
+}
+
 // TODO(brainman): did not check for MS SQL timestamp
 
 func NewColumn(h api.SQLHSTMT, idx int) (Column, error) {
-	namebuf := make([]uint16, 150)
-	namelen, sqltype, size, ret := describeColumn(h, idx, namebuf)
-	if ret == api.SQL_SUCCESS_WITH_INFO && namelen > len(namebuf) {
-		// try again with bigger buffer
-		namebuf = make([]uint16, namelen)
-		namelen, sqltype, size, ret = describeColumn(h, idx, namebuf)
+	var sqltype api.SQLSMALLINT
+	var size api.SQLULEN
+	describe := func(namebuf []uint16) (int, api.SQLRETURN) {
+		namelen, st, sz, ret := describeColumn(h, idx, namebuf)
+		sqltype, size = st, sz
+		return namelen, ret
 	}
-	if IsError(ret) {
-		return nil, NewError("SQLDescribeCol", h)
-	}
-	if namelen > len(namebuf) {
-		// still complaining about buffer size
-		return nil, errors.New("Failed to allocate column name buffer")
+	name, err := readColumnName(describe)
+	if err != nil {
+		if err == errDescribeCol {
+			return nil, NewError("SQLDescribeCol", h)
+		}
+		return nil, err
 	}
 	b := &BaseColumn{
-		name:    api.UTF16ToString(namebuf[:namelen]),
+		name:    name,
 		SQLType: sqltype,
 	}
 	switch sqltype {
@@ -77,7 +105,15 @@ func NewColumn(h api.SQLHSTMT, idx int) (Column, error) {
 		return NewBindableColumn(b, api.SQL_C_LONG, 4), nil
 	case api.SQL_BIGINT:
 		return NewBindableColumn(b, api.SQL_C_SBIGINT, 8), nil
-	case api.SQL_NUMERIC, api.SQL_DECIMAL, api.SQL_FLOAT, api.SQL_REAL, api.SQL_DOUBLE:
+	// NUMERIC and DECIMAL are exact numeric types: converting them through
+	// float64 can lose precision for values with more than 15-17
+	// significant digits, so they are read as decimal text instead and
+	// keep their exact value and scale in the returned string.
+	// The buffer is the column precision plus room for a sign, a decimal
+	// point and the NUL terminator.
+	case api.SQL_NUMERIC, api.SQL_DECIMAL:
+		return NewVariableWidthColumn(b, api.SQL_C_CHAR, size+2)
+	case api.SQL_FLOAT, api.SQL_REAL, api.SQL_DOUBLE:
 		return NewBindableColumn(b, api.SQL_C_DOUBLE, 8), nil
 	case api.SQL_TYPE_TIMESTAMP:
 		var v api.SQL_TIMESTAMP_STRUCT
@@ -399,17 +435,23 @@ loop:
 			total = append(total, b[:l]...)
 			break loop
 		case api.SQL_SUCCESS_WITH_INFO:
-			err := NewError("SQLGetData", h).(*Error)
-			if len(err.Diag) > 0 {
+			err := NewError("SQLGetData", h)
+			diagErr, ok := err.(*Error)
+			if !ok {
+				// NewError failed to collect diagnostics; return the
+				// original error instead of panicking on a type assertion.
+				return nil, err
+			}
+			if len(diagErr.Diag) > 0 {
 				truncated := false
-				for _, diag := range err.Diag {
+				for _, diag := range diagErr.Diag {
 					if diag.State == "01004" {
 						truncated = true
 						break
 					}
 				}
 				if !truncated {
-					return nil, err
+					return nil, diagErr
 				}
 			}
 			i := len(b)

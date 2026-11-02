@@ -10,18 +10,20 @@ import (
 )
 
 func closeDB(t *testing.T, db *sql.DB, shouldStmtCount, ignoreIfStmtCount int) {
-	s := db.Driver().(*Driver).Stats
 	err := db.Close()
 	if err != nil {
 		t.Fatalf("error closing DB: %v", err)
 	}
-	switch s.StmtCount {
+	// Snapshot the counter after Close, so handles released by Close are
+	// counted too; StmtCountSnapshot avoids copying the Stats mutex.
+	s := db.Driver().(*Driver).Stats.StmtCountSnapshot()
+	switch s {
 	case shouldStmtCount:
 		// all good
 	case ignoreIfStmtCount:
 		t.Logf("ignoring unexpected StmtCount of %v", ignoreIfStmtCount)
 	default:
-		t.Errorf("unexpected StmtCount: should=%v, is=%v", ignoreIfStmtCount, s.StmtCount)
+		t.Errorf("unexpected StmtCount: should=%v, is=%v", shouldStmtCount, s)
 	}
 }
 
