@@ -103,3 +103,59 @@ test-mysql:
 stop-mysql:
 	docker stop $(MYSQL_CONTAINER_NAME)
 	docker rm $(MYSQL_CONTAINER_NAME)
+
+# Informix
+
+IFX_CONTAINER_NAME=informix_test
+IFX_NETWORK=informixnetwork
+IFX_IMAGE=ibmcom/informix-developer-database:14.10.FC3DE
+IFX_DB_NAME=test
+IFX_DB_USER=test
+IFX_DB_PASS=test
+
+start-ifx:
+	docker network create ${IFX_NETWORK}
+	docker run \
+		--name $(IFX_CONTAINER_NAME) \
+		--hostname $(IFX_CONTAINER_NAME) \
+		--tty \
+		--privileged \
+		-e LICENSE=accept \
+		-e DB_NAME=$(IFX_DB_NAME) \
+		-e DB_USER=$(IFX_DB_USER) \
+		-e DB_PASS=$(IFX_DB_PASS) \
+		-d \
+		--network=${IFX_NETWORK} \
+		$(IFX_IMAGE)
+	echo -n "starting $(IFX_CONTAINER_NAME) (first boot takes a few minutes)"; \
+		while ! echo 'select count(*) from sysmaster:sysdual;' | \
+			docker exec -i $(IFX_CONTAINER_NAME) dbaccess $(IFX_DB_NAME) >/dev/null 2>&1 ; \
+		do echo -n .; sleep 5; done; echo " done"
+
+build-ifx:
+	docker build \
+		-t ifxodbc \
+		-f informix.Dockerfile \
+		.
+
+test-ifx: IFXSERVER=$(shell docker exec $(IFX_CONTAINER_NAME) printenv INFORMIXSERVER)
+test-ifx:
+	echo "$(IFXSERVER) onsoctcp $(IFX_CONTAINER_NAME) 9088" > /tmp/sqlhosts.ifx
+	docker run \
+		--rm \
+		--network=${IFX_NETWORK} \
+		-e INFORMIXSERVER=$(IFXSERVER) \
+		-v $(CURDIR):/src \
+		-v /tmp/sqlhosts.ifx:/opt/informix/etc/sqlhosts:ro \
+		ifxodbc \
+			go test -v -run 'IFX' \
+				-ifxsrv=$(IFXSERVER) \
+				-ifxdb=$(IFX_DB_NAME) \
+				-ifxuser=$(IFX_DB_USER) \
+				-ifxpass=$(IFX_DB_PASS)
+
+stop-ifx:
+	docker stop $(IFX_CONTAINER_NAME)
+	docker rm $(IFX_CONTAINER_NAME)
+	docker network rm $(IFX_NETWORK)
+
