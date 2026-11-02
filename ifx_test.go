@@ -20,7 +20,7 @@ var (
 )
 
 func ifxConnect() (db *sql.DB, stmtCount int, err error) {
-	conn := fmt.Sprintf("driver=IBM INFORMIX ODBC DRIVER;server=%s;database=%s;user=%s;password=%s",
+	conn := fmt.Sprintf("driver=IBM INFORMIX ODBC DRIVER;server=%s;database=%s;uid=%s;pwd=%s",
 		*ifxsrv, *ifxdb, *ifxuser, *ifxpass)
 	db, err = sql.Open("odbc", conn)
 	if err != nil {

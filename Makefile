@@ -112,6 +112,15 @@ IFX_IMAGE=ibmcom/informix-developer-database:14.10.FC3DE
 IFX_DB_NAME=test
 IFX_DB_USER=test
 IFX_DB_PASS=test
+IFX_TEST_ARGS=-v -run IFX
+IFX_STRESS_DURATION=2m
+IFX_STRESS_WORKERS=8
+IFX_STRESS_SEED=1
+IFX_FUZZ_TIME=1m
+IFX_TEST_TIMEOUT=10m
+IFX_RACE=-race
+IFX_GOGC=100
+IFX_GOMEMLIMIT=off
 
 start-ifx:
 	docker network create ${IFX_NETWORK}
@@ -138,17 +147,19 @@ build-ifx:
 		-f informix.Dockerfile \
 		.
 
-test-ifx: IFXSERVER=$(shell docker exec $(IFX_CONTAINER_NAME) printenv INFORMIXSERVER)
+test-ifx: IFXSERVER=$(shell docker exec $(IFX_CONTAINER_NAME) printenv INFORMIXSERVER || docker exec $(IFX_CONTAINER_NAME) awk '$$2 == "onsoctcp" { print $$1; exit }' /opt/ibm/informix/etc/sqlhosts)
 test-ifx:
 	echo "$(IFXSERVER) onsoctcp $(IFX_CONTAINER_NAME) 9088" > /tmp/sqlhosts.ifx
 	docker run \
 		--rm \
 		--network=${IFX_NETWORK} \
 		-e INFORMIXSERVER=$(IFXSERVER) \
+		-e GOGC=$(IFX_GOGC) \
+		-e GOMEMLIMIT=$(IFX_GOMEMLIMIT) \
 		-v $(CURDIR):/src \
 		-v /tmp/sqlhosts.ifx:/opt/informix/etc/sqlhosts:ro \
 		ifxodbc \
-			go test -v -run 'IFX' \
+			go test $(IFX_TEST_ARGS) \
 				-ifxsrv=$(IFXSERVER) \
 				-ifxdb=$(IFX_DB_NAME) \
 				-ifxuser=$(IFX_DB_USER) \
@@ -159,3 +170,11 @@ stop-ifx:
 	docker rm $(IFX_CONTAINER_NAME)
 	docker network rm $(IFX_NETWORK)
 
+# Explicit opt-in: regular integration tests skip the stress suite.
+stress-ifx: IFX_TEST_ARGS=-v $(IFX_RACE) -count=1 -timeout=$(IFX_TEST_TIMEOUT) -run '^TestIFXStress$$' -ifxstress -ifxstressduration=$(IFX_STRESS_DURATION) -ifxstressworkers=$(IFX_STRESS_WORKERS) -ifxstressseed=$(IFX_STRESS_SEED)
+stress-ifx: test-ifx
+
+fuzz-ifx: IFX_TEST_ARGS=$(IFX_RACE) -count=1 -timeout=$(IFX_TEST_TIMEOUT) -run '^$$' -fuzz '^FuzzIFXSequence$$' -fuzztime=$(IFX_FUZZ_TIME) -parallel=4 -ifxstress
+fuzz-ifx: test-ifx
+
+.PHONY: stress-ifx fuzz-ifx
