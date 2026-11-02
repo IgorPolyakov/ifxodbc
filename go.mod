@@ -1,6 +1,8 @@
 module github.com/IgorPolyakov/ifxodbc
 
+go 1.26.0
+
 require (
 	github.com/go-ole/go-ole v1.2.5
-	golang.org/x/sys v0.0.0-20190916202348-b4ddaad3f8a3
+	golang.org/x/sys v0.49.0
 )
