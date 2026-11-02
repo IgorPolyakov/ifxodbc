@@ -91,6 +91,15 @@ func (s *ODBCStmt) closeByRows() error {
 func (s *ODBCStmt) releaseHandle() error {
 	h := s.h
 	s.h = api.SQLHSTMT(api.SQL_NULL_HSTMT)
+	// The driver stops touching bound buffers once the handle is freed.
+	for i := range s.Parameters {
+		s.Parameters[i].pinner.Unpin()
+	}
+	for _, c := range s.Cols {
+		if bc, ok := c.(*BindableColumn); ok {
+			bc.pinner.Unpin()
+		}
+	}
 	return releaseHandle(h)
 }
 

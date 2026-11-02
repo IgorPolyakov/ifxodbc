@@ -7,6 +7,7 @@ package odbc
 import (
 	"database/sql/driver"
 	"fmt"
+	"runtime"
 	"time"
 	"unsafe"
 
@@ -22,6 +23,10 @@ type Parameter struct {
 	// The fields keep data alive and away from gc.
 	Data             interface{}
 	StrLen_or_IndPtr api.SQLLEN
+	// pinner keeps pinned everything the driver retains between
+	// SQLBindParameter and the SQLExecute calls that use the binding.
+	// A Parameter must not be copied after its first bind.
+	pinner runtime.Pinner
 }
 
 // StoreStrLen_or_IndPtr stores v into StrLen_or_IndPtr field of p
@@ -168,6 +173,16 @@ func (p *Parameter) BindValue(h api.SQLHSTMT, idx int, v driver.Value, conn *Con
 		api.SQLPOINTER(buf), buflen, plen)
 	if IsError(ret) {
 		return NewError("SQLBindParameter", h)
+	}
+	// The driver keeps buf and plen and uses them at SQLExecute time,
+	// after this cgo call has returned: pin them until the next bind
+	// or the statement close unpins them.
+	p.pinner.Unpin()
+	if buf != nil {
+		p.pinner.Pin(buf)
+	}
+	if plen != nil {
+		p.pinner.Pin(unsafe.Pointer(plen))
 	}
 	return nil
 }

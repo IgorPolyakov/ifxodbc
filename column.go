@@ -8,6 +8,7 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
+	"runtime"
 	"time"
 	"unsafe"
 
@@ -298,6 +299,10 @@ type BindableColumn struct {
 	Size            int
 	Len             BufferLen
 	Buffer          []byte
+	// pinner keeps pinned Buffer and Len, whose addresses the driver
+	// retains between SQLBindCol and the SQLFetch calls that fill them.
+	// A BindableColumn must not be copied after its first bind.
+	pinner runtime.Pinner
 }
 
 // TODO(brainman): BindableColumn.Buffer is used by external code after external code returns - that needs to be avoided in the future
@@ -341,6 +346,11 @@ func (c *BindableColumn) Bind(h api.SQLHSTMT, idx int) (bool, error) {
 		return false, NewError("SQLBindCol", h)
 	}
 	c.IsBound = true
+	// The driver fills Buffer and Len at every SQLFetch, after this cgo
+	// call has returned: pin them until unbind or statement close.
+	c.pinner.Unpin()
+	c.pinner.Pin(unsafe.Pointer(&c.Buffer[0]))
+	c.pinner.Pin(unsafe.Pointer(&c.Len))
 	return true, nil
 }
 
@@ -351,6 +361,7 @@ func (c *BindableColumn) Unbind(h api.SQLHSTMT, idx int) error {
 		return NewError("SQLBindCol", h)
 	}
 	c.IsBound = false
+	c.pinner.Unpin()
 	return nil
 }
 

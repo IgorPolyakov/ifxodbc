@@ -98,10 +98,12 @@ live fuzz 1 минута PASS (12081 execs, corpus 2 -> 64); gc/soak не
 
 ## Риски, которые ещё надо подтвердить
 
-Следующий приоритет: закрепление C-буферов и отмена оставшихся этапов
-(подготовка в полёте, `SQLRowCount`, `SQLGetData`, метаданные). Регрессии
-отмены SQLExecute и чтения строк на реальной блокировке добавлены; они не
-закрывают оставшиеся этапы работы ODBC.
+Следующий приоритет: отмена оставшихся этапов (подготовка в полёте,
+`SQLRowCount`, `SQLGetData`, метаданные) и C TSan/Valgrind для
+закрепления и конкурентной отмены. Регрессии отмены SQLExecute и чтения
+строк на реальной блокировке добавлены; закрепление буферов реализовано
+через `runtime.Pinner`. Всё это не закрывает оставшиеся этапы работы
+ODBC и проверку C-уровня.
 
 - [ ] **Высокий: закрепление Go-памяти, сохраняемой C-драйвером.**
   `param.go`, `BindValue` передаёт буферы и индикаторы в `SQLBindParameter`,
@@ -111,6 +113,18 @@ live fuzz 1 минута PASS (12081 execs, corpus 2 -> 64); gc/soak не
   `runtime.Pinner` либо C-буферов, перепривязку, закрытие и ошибки частичного bind.
   Проверки: `GOEXPERIMENT=cgocheck2`, `-race`, `GOGC=1`, многократные rebind/GC.
   Отсутствие panic не доказывает корректность cgo lifetime.
+  Реализовано через `runtime.Pinner` 2026-11-02: `Parameter.pinner`
+  закрепляет буфер данных и адрес индикатора после успешного
+  `SQLBindParameter` (перепривязка сначала снимает старые закрепления);
+  `BindableColumn.pinner` закрепляет `Buffer` и `Len` после `SQLBindCol`
+  (`Unbind` снимает); `releaseHandle` снимает все закрепления перед
+  освобождением хендла statement. Регрессия: `TestIFXRebindGC` - 100
+  перепривязок int64/string/decimal/float64 с `runtime.GC()` между bind
+  и execute, контроль строк и точного decimal. Проверено: `make test-ifx`
+  PASS, cgocheck2 smoke PASS (27111 операций; до исправления cgocheck2
+  тоже не падал - детектор не видит указатели, спрятанные драйвером во
+  внутренней C-памяти, поэтому корректность обеспечена конструктивно).
+  Осталось: C TSan/Valgrind и поведение при будущей moving GC.
 
 - [ ] **Высокий: конкурентная отмена и работа statement.**
   `callWithContext` вызывает SQLCancel из другой горутины. Watcher больше
@@ -172,7 +186,7 @@ live fuzz 1 минута PASS (12081 execs, corpus 2 -> 64); gc/soak не
 | Smoke, 10 секунд | `make stress-ifx IFX_STRESS_DURATION=10s` | PASS 2026-11-02: seed=1, 26448 операций, race чисто, хендлы стабильны |
 | Race, 8 workers, 2 минуты | `scripts/stress-informix.sh stress` | PASS 2026-11-02: seed=1, 310047 операций, race-отчётов нет; в нагрузке env/conn/stmt 1/9/8 -> 1/16/8 (пул открыл доп. соединения; сам тест в нагрузке сверяет только env/stmt); cleanup в `openIFXStressDB` после `db.Close` сверяет все три счётчика со снимком, снятым до открытия пула, а не с 9 - PASS; лог /tmp/ifxodbc-stress.DDdmF3 |
 | Live fuzz, 1 минута | `scripts/stress-informix.sh fuzz` | PASS 2026-11-02: 12081 execs за 1m, 4 воркера, race чисто, corpus 2 -> 64 (62 new interesting); аварийных входов в testdata/fuzz не записано - corpus живёт в GOCACHE контейнера и не сохранён |
-| GC pressure | `scripts/stress-informix.sh gc` | ошибки, хендлы, память |
+| GC pressure | `scripts/stress-informix.sh gc` | PASS 2026-11-02 (с закреплением Pinner): GOGC=1, GOMEMLIMIT=200MiB, race, seed=1, 312609 операций, ошибок и race-отчётов нет, хендлы стабильны |
 | Soak, 30 минут | `scripts/stress-informix.sh soak` | темп, хендлы, внешние RSS/FD |
 | Soak без race | `IFX_RACE= scripts/stress-informix.sh soak` | сравнение RSS с race-прогоном |
 
@@ -220,6 +234,10 @@ live fuzz 1 минута PASS (12081 execs, corpus 2 -> 64); gc/soak не
 - Полный live-прогон `make test-ifx` PASS: `TestIFXCancelLockWait`,
   `TestIFXCancelBlocked`, `TestIFXTime`, `TestIFXBeginErr`,
   `TestIFXDecimal`, `TestIFXColumnTypes`.
+- 2026-11-02, закрепление: `TestIFXRebindGC` PASS; cgocheck2 smoke
+  `docker run -e GOEXPERIMENT=cgocheck2 ... stress-ifx 10s` PASS и до
+  исправления (27161 операций), и после (27111 операций) - детектор этот
+  паттерн не видит, корректность конструктивная.
 
 Повторить:
 

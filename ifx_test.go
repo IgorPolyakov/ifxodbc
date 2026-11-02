@@ -9,6 +9,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -87,6 +88,55 @@ func TestIFXBeginErr(t *testing.T) {
 	after := ifxStressHandles()
 	if before != after {
 		t.Errorf("handle leak: %v -> %v", before, after)
+	}
+}
+
+func TestIFXRebindGC(t *testing.T) {
+	db, sc, err := ifxConnect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeDB(t, db, sc, sc)
+
+	db.Exec("drop table ifx_rebind")
+	exec(t, db, "create table ifx_rebind (id int, s varchar(128), n decimal(10,2), f float)")
+	defer exec(t, db, "drop table ifx_rebind")
+
+	stmt, err := db.Prepare("insert into ifx_rebind values (?, ?, ?, ?)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stmt.Close()
+
+	// Every execution rebinds the parameters, replacing the buffers the
+	// driver retained; the GC churn around the binds must not disturb
+	// the data the following SQLExecute reads.
+	for i := 0; i < 100; i++ {
+		want := fmt.Sprintf("value-%d", i)
+		dec := fmt.Sprintf("%d.25", i)
+		f := float64(i) + 0.5
+		runtime.GC()
+		if _, err := stmt.Exec(i, want, dec, f); err != nil {
+			t.Fatalf("iteration %d: %v", i, err)
+		}
+		runtime.GC()
+	}
+	var count int
+	if err := db.QueryRow("select count(*) from ifx_rebind").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 100 {
+		t.Fatalf("row count: want=100, got=%d", count)
+	}
+	var s, n string
+	if err := db.QueryRow("select s, n from ifx_rebind where id = 42").Scan(&s, &n); err != nil {
+		t.Fatal(err)
+	}
+	if s != "value-42" {
+		t.Errorf("string: want=value-42, got=%v", s)
+	}
+	if strings.TrimSpace(n) != "42.25" {
+		t.Errorf("decimal: want=42.25, got=%v", n)
 	}
 }
 
