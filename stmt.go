@@ -158,7 +158,7 @@ func (s *Stmt) Query(args []driver.Value) (driver.Rows, error) {
 		return nil, err
 	}
 	s.os.usedByRows = true // now both Stmt and Rows refer to it
-	return &Rows{os: s.os}, nil
+	return newRows(nil, s.os), nil
 }
 
 // QueryContext implements driver.StmtQueryContext. Like Conn.QueryContext,
@@ -193,5 +193,5 @@ func (s *Stmt) QueryContext(ctx context.Context, args []driver.NamedValue) (driv
 		return nil, err
 	}
 	s.os.usedByRows = true // now both Stmt and Rows refer to it
-	return &Rows{os: s.os}, nil
+	return newRows(ctx, s.os), nil
 }

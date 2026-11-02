@@ -5,6 +5,7 @@
 package odbc
 
 import (
+	"context"
 	"database/sql/driver"
 	"io"
 
@@ -12,7 +13,22 @@ import (
 )
 
 type Rows struct {
-	os *ODBCStmt
+	os  *ODBCStmt
+	ctx context.Context
+}
+
+// newRows creates Rows bound to the query context: SQLFetch and
+// SQLMoreResults observe the context through ODBCStmt.callContext.
+func newRows(ctx context.Context, os *ODBCStmt) *Rows {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return &Rows{os: os, ctx: ctx}
+}
+
+// ctxErr reports the context error once the context is done.
+func (r *Rows) ctxErr() error {
+	return r.ctx.Err()
 }
 
 func (r *Rows) Columns() []string {
@@ -24,7 +40,14 @@ func (r *Rows) Columns() []string {
 }
 
 func (r *Rows) Next(dest []driver.Value) error {
-	ret := api.SQLFetch(r.os.h)
+	if err := r.ctxErr(); err != nil {
+		return err
+	}
+	ret, err := r.os.callContext(r.ctx, func() api.SQLRETURN { return api.SQLFetch(r.os.h) })
+	if err != nil {
+		// cancelled: the cursor may still be open, Rows.Close closes it
+		return err
+	}
 	if ret == api.SQL_NO_DATA {
 		return io.EOF
 	}
@@ -42,6 +65,9 @@ func (r *Rows) Next(dest []driver.Value) error {
 			v, err = r.os.Cols[i].Value(r.os.h, i)
 		}
 		if err != nil {
+			if e := r.ctxErr(); e != nil {
+				return e
+			}
 			return err
 		}
 		dest[i] = v
@@ -58,7 +84,15 @@ func (r *Rows) HasNextResultSet() bool {
 }
 
 func (r *Rows) NextResultSet() error {
-	ret := api.SQLMoreResults(r.os.h)
+	if err := r.ctxErr(); err != nil {
+		return err
+	}
+	ret, err := r.os.callContext(r.ctx, func() api.SQLRETURN { return api.SQLMoreResults(r.os.h) })
+	if err != nil {
+		// cancelled: the new result set may have opened, close its cursor
+		api.SQLCloseCursor(r.os.h)
+		return err
+	}
 	if ret == api.SQL_NO_DATA {
 		return io.EOF
 	}
@@ -66,7 +100,7 @@ func (r *Rows) NextResultSet() error {
 		return NewError("SQLMoreResults", r.os.h)
 	}
 
-	err := r.os.BindColumns()
+	err = r.os.BindColumns()
 	if err != nil {
 		return err
 	}

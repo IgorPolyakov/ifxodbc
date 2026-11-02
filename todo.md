@@ -7,9 +7,10 @@
 Обзор изначально был статическим: короткие попытки останавливались на
 `SQLDriverConnect`, до стресс-сценариев не доходили. 2026-11-02 после
 исправлений выполнены live-прогоны: `make test-ifx` PASS, smoke 10s PASS
-(26448 операций), race-стресс 8 воркеров 2 минуты PASS (310047 операций);
-fuzz/gc/soak не запускались. Успешный стресс не закрывает риски закрепления
-C-буферов и отмены в полёте - это следующий приоритет (см. раздел рисков).
+(26448 операций), race-стресс 8 воркеров 2 минуты PASS (310047 операций),
+live fuzz 1 минута PASS (12081 execs, corpus 2 -> 64); gc/soak не
+запускались. Успешные прогоны не закрывают риски закрепления C-буферов
+и отмены в полёте - это следующий приоритет (см. раздел рисков).
 
 ## Подготовлено
 
@@ -47,10 +48,17 @@ C-буферов и отмены в полёте - это следующий п�
   `SQLCancel` каждые 10 мс до завершения нативного вызова: отмена, попавшая
   до входа в ODBC, больше не теряется. Перед диагностикой, закрытием и
   повторным использованием хендла вызывающий дожидается выхода watcher.
-  Покрыты `SQLExecute` и `SQLMoreResults` в `Stmt.ExecContext`.
-  Остаются без наблюдателя: подготовка в полёте, `SQLRowCount`, чтение
-  `Rows.Next`/`NextResultSet` и получение метаданных. Эти ограничения не
-  следует считать исправленными успешным тестом отмены SQLExecute.
+  Покрыты `SQLExecute` и `SQLMoreResults` в `Stmt.ExecContext`, а после
+  доработки `rows.go` - `SQLFetch` и `SQLMoreResults` в `Rows.Next` и
+  `NextResultSet`: Rows хранит контекст запроса, ошибки чтения после
+  отмены возвращают `ctx.Err()`. Регрессия чтения: `TestIFXCancelLockWait`
+  (exclusive table lock + repeatable read блокируют чтение; на 14.10.FC3DE
+  строковая блокировка чтения не останавливает, потребовался table lock).
+  Остаются без наблюдателя: подготовка в полёте, `SQLRowCount`, `SQLGetData`
+  в колоночном цикле и `getDataChunked`, получение метаданных; отдельная
+  блокировка `SQLMoreResults`/`NextResultSet` не воспроизведена - нужен
+  многорезультиатный сценарий. Эти ограничения не следует считать
+  исправленными успешными тестами отмены SQLExecute и чтения.
 - [x] **Высокий: потеря отмены перед входом в SQLExecute** (исправлено).
   Однократный SQLCancel мог завершиться до запуска worker, после чего
   SQLExecute начинал выполняться и ожидание worker не прерывалось.
@@ -90,9 +98,10 @@ C-буферов и отмены в полёте - это следующий п�
 
 ## Риски, которые ещё надо подтвердить
 
-Следующий приоритет: закрепление C-буферов и отмена при чтении строк и
-подготовке. Регрессия отмены SQLExecute на реальной блокировке добавлена;
-она не закрывает оставшиеся этапы работы ODBC.
+Следующий приоритет: закрепление C-буферов и отмена оставшихся этапов
+(подготовка в полёте, `SQLRowCount`, `SQLGetData`, метаданные). Регрессии
+отмены SQLExecute и чтения строк на реальной блокировке добавлены; они не
+закрывают оставшиеся этапы работы ODBC.
 
 - [ ] **Высокий: закрепление Go-памяти, сохраняемой C-драйвером.**
   `param.go`, `BindValue` передаёт буферы и индикаторы в `SQLBindParameter`,
@@ -162,7 +171,7 @@ C-буферов и отмены в полёте - это следующий п�
 |---|---|---|
 | Smoke, 10 секунд | `make stress-ifx IFX_STRESS_DURATION=10s` | PASS 2026-11-02: seed=1, 26448 операций, race чисто, хендлы стабильны |
 | Race, 8 workers, 2 минуты | `scripts/stress-informix.sh stress` | PASS 2026-11-02: seed=1, 310047 операций, race-отчётов нет; в нагрузке env/conn/stmt 1/9/8 -> 1/16/8 (пул открыл доп. соединения; сам тест в нагрузке сверяет только env/stmt); cleanup в `openIFXStressDB` после `db.Close` сверяет все три счётчика со снимком, снятым до открытия пула, а не с 9 - PASS; лог /tmp/ifxodbc-stress.DDdmF3 |
-| Live fuzz, 1 минута | `scripts/stress-informix.sh fuzz` | execs, corpus, минимальный вход |
+| Live fuzz, 1 минута | `scripts/stress-informix.sh fuzz` | PASS 2026-11-02: 12081 execs за 1m, 4 воркера, race чисто, corpus 2 -> 64 (62 new interesting); аварийных входов в testdata/fuzz не записано - corpus живёт в GOCACHE контейнера и не сохранён |
 | GC pressure | `scripts/stress-informix.sh gc` | ошибки, хендлы, память |
 | Soak, 30 минут | `scripts/stress-informix.sh soak` | темп, хендлы, внешние RSS/FD |
 | Soak без race | `IFX_RACE= scripts/stress-informix.sh soak` | сравнение RSS с race-прогоном |
@@ -202,6 +211,15 @@ C-буферов и отмены в полёте - это следующий п�
   Query-пути намеренно используют UPDATE: это заставляет ждать именно
   SQLExecute, независимо от отложенного чтения SELECT через SQLFetch.
 - Лог повторений: `/tmp/ifxodbc-cancel-race.log`. Race-отчётов нет.
+- PASS, `-race`: `TestIFXCancelLockWait` после перевода `Rows.Next`/
+  `NextResultSet` на `callContext`: чтение под exclusive table lock в
+  repeatable read блокируется и прерывается с `context.DeadlineExceeded`
+  за ~3 с, покрыты прямой и подготовленный запрос.
+- PASS, `-race`: повторный smoke `make stress-ifx IFX_STRESS_DURATION=10s`
+  после изменений rows: 25896 операций, race чисто, хендлы стабильны.
+- Полный live-прогон `make test-ifx` PASS: `TestIFXCancelLockWait`,
+  `TestIFXCancelBlocked`, `TestIFXTime`, `TestIFXBeginErr`,
+  `TestIFXDecimal`, `TestIFXColumnTypes`.
 
 Повторить:
 

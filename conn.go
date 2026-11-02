@@ -107,7 +107,7 @@ func (c *Conn) QueryContext(ctx context.Context, query string, args []driver.Nam
 		return nil, err
 	}
 	os.usedByRows = true
-	return &Rows{os: os}, nil
+	return newRows(ctx, os), nil
 }
 
 // namedValueToValue is a utility function that converts a driver.NamedValue into a driver.Value.
