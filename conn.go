@@ -89,8 +89,8 @@ func (c *Conn) QueryContext(ctx context.Context, query string, args []driver.Nam
 		return nil, err
 	}
 
-	// prepare the statement
-	os, err := c.PrepareODBCStmt(query)
+	// prepare the statement; the preparation itself observes the context
+	os, err := c.prepareODBCStmtContext(ctx, query)
 	if err != nil {
 		return nil, err
 	}
@@ -103,7 +103,7 @@ func (c *Conn) QueryContext(ctx context.Context, query string, args []driver.Nam
 	if err := os.execContext(ctx, dargs, c); err != nil {
 		return nil, err
 	}
-	if err := os.BindColumns(); err != nil {
+	if err := os.bindColumnsContext(ctx); err != nil {
 		return nil, err
 	}
 	os.usedByRows = true

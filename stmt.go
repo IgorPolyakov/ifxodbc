@@ -49,10 +49,10 @@ func (s *Stmt) Close() error {
 
 // reprepare replaces the statement handle after its previous result set
 // was not fully consumed. It must be called with s.mu held.
-func (s *Stmt) reprepare() error {
+func (s *Stmt) reprepare(ctx context.Context) error {
 	s.os.closeByStmt()
 	s.os = nil
-	os, err := s.c.PrepareODBCStmt(s.query)
+	os, err := s.c.prepareODBCStmtContext(ctx, s.query)
 	if err != nil {
 		return err
 	}
@@ -67,7 +67,7 @@ func (s *Stmt) Exec(args []driver.Value) (driver.Result, error) {
 		return nil, errors.New("Stmt is closed")
 	}
 	if s.os.usedByRows {
-		if err := s.reprepare(); err != nil {
+		if err := s.reprepare(context.Background()); err != nil {
 			return nil, err
 		}
 	}
@@ -98,7 +98,7 @@ func (s *Stmt) ExecContext(ctx context.Context, args []driver.NamedValue) (drive
 		return nil, errors.New("Stmt is closed")
 	}
 	if s.os.usedByRows {
-		if err := s.reprepare(); err != nil {
+		if err := s.reprepare(ctx); err != nil {
 			return nil, err
 		}
 	}
@@ -118,12 +118,16 @@ func (s *Stmt) sumRowCountContext(ctx context.Context) (driver.Result, error) {
 	var sumRowCount int64
 	for {
 		var c api.SQLLEN
-		ret := api.SQLRowCount(s.os.h, &c)
+		ret, err := s.os.callContext(ctx, func() api.SQLRETURN { return api.SQLRowCount(s.os.h, &c) })
+		if err != nil {
+			api.SQLCloseCursor(s.os.h)
+			return nil, err
+		}
 		if IsError(ret) {
 			return nil, NewError("SQLRowCount", s.os.h)
 		}
 		sumRowCount += int64(c)
-		ret, err := s.os.callContext(ctx, func() api.SQLRETURN { return api.SQLMoreResults(s.os.h) })
+		ret, err = s.os.callContext(ctx, func() api.SQLRETURN { return api.SQLMoreResults(s.os.h) })
 		if err != nil {
 			api.SQLCloseCursor(s.os.h)
 			return nil, err
@@ -145,7 +149,7 @@ func (s *Stmt) Query(args []driver.Value) (driver.Rows, error) {
 		return nil, errors.New("Stmt is closed")
 	}
 	if s.os.usedByRows {
-		if err := s.reprepare(); err != nil {
+		if err := s.reprepare(context.Background()); err != nil {
 			return nil, err
 		}
 	}
@@ -181,7 +185,7 @@ func (s *Stmt) QueryContext(ctx context.Context, args []driver.NamedValue) (driv
 		return nil, errors.New("Stmt is closed")
 	}
 	if s.os.usedByRows {
-		if err := s.reprepare(); err != nil {
+		if err := s.reprepare(ctx); err != nil {
 			return nil, err
 		}
 	}
@@ -189,7 +193,7 @@ func (s *Stmt) QueryContext(ctx context.Context, args []driver.NamedValue) (driv
 	if err := s.os.execContext(ctx, dargs, s.c); err != nil {
 		return nil, err
 	}
-	if err := s.os.BindColumns(); err != nil {
+	if err := s.os.bindColumnsContext(ctx); err != nil {
 		return nil, err
 	}
 	s.os.usedByRows = true // now both Stmt and Rows refer to it

@@ -51,12 +51,20 @@ live fuzz 1 минута PASS (12081 execs, corpus 2 -> 64); gc/soak не
   Покрыты `SQLExecute` и `SQLMoreResults` в `Stmt.ExecContext`, а после
   доработки `rows.go` - `SQLFetch` и `SQLMoreResults` в `Rows.Next` и
   `NextResultSet`: Rows хранит контекст запроса, ошибки чтения после
-  отмены возвращают `ctx.Err()`. Регрессия чтения: `TestIFXCancelLockWait`
+  отмены возвращают `ctx.Err()`. После следующего этапа (2026-11-02)
+  покрыты также `SQLPrepare` (`prepareODBCStmtContext`, включая
+  `reprepare` в подготовленных путях), `SQLRowCount` и `SQLNumResultCols`
+  (`sumRowCountContext`, `bindColumnsContext`) - все через
+  `callWithContext`. Регрессия чтения: `TestIFXCancelLockWait`
   (exclusive table lock + repeatable read блокируют чтение; на 14.10.FC3DE
   строковая блокировка чтения не останавливает, потребовался table lock).
-  Остаются без наблюдателя: подготовка в полёте, `SQLRowCount`, `SQLGetData`
-  в колоночном цикле и `getDataChunked`, получение метаданных; отдельная
-  блокировка `SQLMoreResults`/`NextResultSet` не воспроизведена - нужен
+  Остаются без наблюдателя: `SQLGetData` в колоночном цикле и
+  `getDataChunked` (требуют смены сигнатуры интерфейса `Column`),
+  `SQLDescribeParam`/`SQLDescribeCol` метаданные; блокировка
+  `SQLPrepare`/`SQLRowCount`/`SQLNumResultCols` на реальных данных не
+  воспроизведена (на этом сервере они не блокируются на lock-wait -
+  корректность конструктивная); отдельная блокировка
+  `SQLMoreResults`/`NextResultSet` не воспроизведена - нужен
   многорезультиатный сценарий. Эти ограничения не следует считать
   исправленными успешными тестами отмены SQLExecute и чтения.
 - [x] **Высокий: потеря отмены перед входом в SQLExecute** (исправлено).
@@ -98,12 +106,11 @@ live fuzz 1 минута PASS (12081 execs, corpus 2 -> 64); gc/soak не
 
 ## Риски, которые ещё надо подтвердить
 
-Следующий приоритет: отмена оставшихся этапов (подготовка в полёте,
-`SQLRowCount`, `SQLGetData`, метаданные) и C TSan/Valgrind для
-закрепления и конкурентной отмены. Регрессии отмены SQLExecute и чтения
-строк на реальной блокировке добавлены; закрепление буферов реализовано
-через `runtime.Pinner`. Всё это не закрывает оставшиеся этапы работы
-ODBC и проверку C-уровня.
+Следующий приоритет: `SQLGetData` в колоночном цикле (смена интерфейса
+`Column`), C TSan/Valgrind для закрепления и конкурентной отмены,
+многорезультиатная регрессия `NextResultSet`. Отмены SQLExecute, чтения,
+подготовки, `SQLRowCount` и `SQLNumResultCols` реализованы через
+`callWithContext`; закрепление буферов - через `runtime.Pinner`.
 
 - [ ] **Высокий: закрепление Go-памяти, сохраняемой C-драйвером.**
   `param.go`, `BindValue` передаёт буферы и индикаторы в `SQLBindParameter`,
@@ -134,22 +141,29 @@ ODBC и проверку C-уровня.
   Проверить требования клиентской библиотеки и окна completion/cancel под
   C TSan/Valgrind; Go `-race` внутренние гонки библиотеки не видит.
 
-- [ ] **Средний: проверка unsafe-декодирования WCHAR.**
-  `column.go`, `BaseColumn.Value` использует `*[1<<28]uint16` с последующим
-  срезом вместо `unsafe.Slice`. Проверить маленькие буферы под checkptr,
-  большие значения и нечётную длину. Порог и характер проблемы отличаются
-  от исправленного в `go_ibm_db` случая — его результаты сюда не переносить.
+- [x] **Средний: проверка unsafe-декодирования WCHAR** (исправлено).
+  `column.go`, `BaseColumn.Value`: `*[1<<28]uint16` заменён на
+  `unsafe.Slice((*uint16)(p), len(buf)/2)` - семантика та же, срез
+  корректен под checkptr. Регрессия: `TestBaseColumnValueWChar` -
+  ascii/cyrillic/суррогатные пары, NUL-терминация и нечётная длина.
+- [x] **Средний: восстановление усечённых bound-колонок** (частично,
+  в пределах текущей БД). Регрессия `TestIFXTruncatedColumns`:
+  границы varchar 254/255, длинный lvarchar(4000) через chunked-путь,
+  NULL отдельно от пустой строки, точное сравнение байтов. Ограничения
+  окружения: страница сервера даёт varchar максимум 255 (проверка границ
+  1023/1024/1025 недостижима), БД однобайтовая (819) - charset expansion
+  и Unicode значения отвергаются сервером ("Inexact character conversion"),
+  так что живой триггер пути bound-truncation на этой БД невозможен;
+  параметр длиннее ~4000 символов биндится как text и не кастуется в
+  lvarchar (длинное значение вставляется литералом). `ct.Length()` для
+  всех колонок возвращает 0/не-ok. Пути multi-column unbind справа от
+  усечённой и длинные UTF-16 строки требуют multibyte-БД.
 
-- [ ] **Средний: восстановление усечённых bound-колонок.**
-  `Rows.Next` делает unbind и повторно читает текущую строку через SQLGetData.
-  Проверить точное содержимое после charset expansion, несколько колонок справа,
-  следующую строку, NULL/empty, границы 1023/1024/1025 и длинные UTF-16 строки.
-  Сейчас есть только unit-тест размера терминатора, а не live-регрессия данных.
-
-- [ ] **Средний: текущий `TestIFXTime` не проверяет обычный datetime.**
-  Тест вставляет год 1, сбрасывает дату и дробную часть секунды; комментарий
-  ссылается на SQL_TIME_STRUCT, хотя BindValue использует SQL_TIMESTAMP_STRUCT.
-  Добавить round-trip современной даты, дробных секунд и явный контракт зоны.
+- [x] **Средний: текущий `TestIFXTime` не проверяет обычный datetime**
+  (исправлено). Добавлен `TestIFXDateTimeFraction`: round-trip современной
+  даты с дробными секундами в `datetime year to fraction(5)` с допуском
+  20 мкс; зона - локальная на запись и чтение. Устаревший комментарий про
+  `SQL_TIME_STRUCT` в `TestIFXTime` заменён на корректный.
 
 ## Инфраструктура и границы покрытия
 
@@ -187,8 +201,8 @@ ODBC и проверку C-уровня.
 | Race, 8 workers, 2 минуты | `scripts/stress-informix.sh stress` | PASS 2026-11-02: seed=1, 310047 операций, race-отчётов нет; в нагрузке env/conn/stmt 1/9/8 -> 1/16/8 (пул открыл доп. соединения; сам тест в нагрузке сверяет только env/stmt); cleanup в `openIFXStressDB` после `db.Close` сверяет все три счётчика со снимком, снятым до открытия пула, а не с 9 - PASS; лог /tmp/ifxodbc-stress.DDdmF3 |
 | Live fuzz, 1 минута | `scripts/stress-informix.sh fuzz` | PASS 2026-11-02: 12081 execs за 1m, 4 воркера, race чисто, corpus 2 -> 64 (62 new interesting); аварийных входов в testdata/fuzz не записано - corpus живёт в GOCACHE контейнера и не сохранён |
 | GC pressure | `scripts/stress-informix.sh gc` | PASS 2026-11-02 (с закреплением Pinner): GOGC=1, GOMEMLIMIT=200MiB, race, seed=1, 312609 операций, ошибок и race-отчётов нет, хендлы стабильны |
-| Soak, 30 минут | `scripts/stress-informix.sh soak` | темп, хендлы, внешние RSS/FD |
-| Soak без race | `IFX_RACE= scripts/stress-informix.sh soak` | сравнение RSS с race-прогоном |
+| Soak, 30 минут | `scripts/stress-informix.sh soak` | попытка 1 (2026-11-02, worktree 59791b5): FAIL через 3m21s, 534807 операций - ISAM `Could not position within a file via an index` на systables (operation 8); попытка 2: FAIL через 8s - `Cannot create a user thread` на connect. Обе попытки запускались параллельно с другими live-прогонами против того же сервера (лимит ~24 соединения) - soak требует монопольного сервера; повторяется без конкуренции |
+| Soak без race | `IFX_RACE= scripts/stress-informix.sh soak` | сравнение RSS с race-прогоном; не запускался (цепочка останавливалась на первом FAIL) |
 
 Время отдельной операции ограничено контекстом 5 секунд, но текущий драйвер
 не гарантирует прерывание всех ODBC-вызовов. Реальный аварийный ограничитель —

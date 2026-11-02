@@ -100,7 +100,7 @@ func (r *Rows) NextResultSet() error {
 		return NewError("SQLMoreResults", r.os.h)
 	}
 
-	err = r.os.BindColumns()
+	err = r.os.bindColumnsContext(r.ctx)
 	if err != nil {
 		return err
 	}

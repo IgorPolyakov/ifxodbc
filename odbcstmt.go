@@ -29,6 +29,10 @@ type ODBCStmt struct {
 }
 
 func (c *Conn) PrepareODBCStmt(query string) (*ODBCStmt, error) {
+	return c.prepareODBCStmtContext(context.Background(), query)
+}
+
+func (c *Conn) prepareODBCStmtContext(ctx context.Context, query string) (*ODBCStmt, error) {
 	var out api.SQLHANDLE
 	ret := api.SQLAllocHandle(api.SQL_HANDLE_STMT, api.SQLHANDLE(c.h), &out)
 	if IsError(ret) {
@@ -41,7 +45,13 @@ func (c *Conn) PrepareODBCStmt(query string) (*ODBCStmt, error) {
 	}
 
 	b := api.StringToUTF16(query)
-	ret = api.SQLPrepare(h, (*api.SQLWCHAR)(unsafe.Pointer(&b[0])), api.SQL_NTS)
+	ret, err = callWithContext(ctx, func() api.SQLRETURN {
+		return api.SQLPrepare(h, (*api.SQLWCHAR)(unsafe.Pointer(&b[0])), api.SQL_NTS)
+	}, func() { api.SQLCancel(h) })
+	if err != nil {
+		defer releaseHandle(h)
+		return nil, err
+	}
 	if IsError(ret) {
 		defer releaseHandle(h)
 		return nil, c.newError("SQLPrepare", h)
@@ -147,9 +157,16 @@ func (s *ODBCStmt) execContext(ctx context.Context, args []driver.Value, conn *C
 }
 
 func (s *ODBCStmt) BindColumns() error {
+	return s.bindColumnsContext(context.Background())
+}
+
+func (s *ODBCStmt) bindColumnsContext(ctx context.Context) error {
 	// count columns
 	var n api.SQLSMALLINT
-	ret := api.SQLNumResultCols(s.h, &n)
+	ret, err := s.callContext(ctx, func() api.SQLRETURN { return api.SQLNumResultCols(s.h, &n) })
+	if err != nil {
+		return err
+	}
 	if IsError(ret) {
 		return NewError("SQLNumResultCols", s.h)
 	}

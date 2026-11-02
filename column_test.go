@@ -5,8 +5,10 @@
 package odbc
 
 import (
+	"encoding/binary"
 	"strings"
 	"testing"
+	"unicode/utf16"
 
 	"github.com/IgorPolyakov/ifxodbc/api"
 )
@@ -82,5 +84,39 @@ func TestReadColumnNameErrors(t *testing.T) {
 		return len(namebuf) + 1, api.SQL_SUCCESS_WITH_INFO
 	}); err == nil {
 		t.Error("expected an error when the name never fits the buffer")
+	}
+}
+
+func TestBaseColumnValueWChar(t *testing.T) {
+	c := &BaseColumn{CType: api.SQL_C_WCHAR}
+	for _, test := range []struct {
+		name string
+		in   string
+	}{
+		{"empty", ""},
+		{"ascii", "abc"},
+		{"cyrillic", "привет"},
+		{"surrogate pair", "\U0001F600"},
+	} {
+		u := utf16.Encode([]rune(test.in))
+		b := make([]byte, len(u)*2+2) // room for the terminating NUL
+		for i, v := range u {
+			binary.LittleEndian.PutUint16(b[i*2:], uint16(v))
+		}
+		got, err := c.Value(b)
+		if err != nil {
+			t.Fatalf("%s: %v", test.name, err)
+		}
+		if string(got.([]byte)) != test.in {
+			t.Errorf("%s: got %q, want %q", test.name, got, test.in)
+		}
+	}
+	// an odd trailing byte is ignored, as with the old pointer cast
+	got, err := c.Value([]byte{'a', 0, 'b', 0, 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got.([]byte)) != "ab" {
+		t.Errorf("odd length: got %q, want %q", got, "ab")
 	}
 }
