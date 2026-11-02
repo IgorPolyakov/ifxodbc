@@ -201,8 +201,8 @@ live fuzz 1 минута PASS (12081 execs, corpus 2 -> 64); gc/soak не
 | Race, 8 workers, 2 минуты | `scripts/stress-informix.sh stress` | PASS 2026-11-02: seed=1, 310047 операций, race-отчётов нет; в нагрузке env/conn/stmt 1/9/8 -> 1/16/8 (пул открыл доп. соединения; сам тест в нагрузке сверяет только env/stmt); cleanup в `openIFXStressDB` после `db.Close` сверяет все три счётчика со снимком, снятым до открытия пула, а не с 9 - PASS; лог /tmp/ifxodbc-stress.DDdmF3 |
 | Live fuzz, 1 минута | `scripts/stress-informix.sh fuzz` | PASS 2026-11-02: 12081 execs за 1m, 4 воркера, race чисто, corpus 2 -> 64 (62 new interesting); аварийных входов в testdata/fuzz не записано - corpus живёт в GOCACHE контейнера и не сохранён |
 | GC pressure | `scripts/stress-informix.sh gc` | PASS 2026-11-02 (с закреплением Pinner): GOGC=1, GOMEMLIMIT=200MiB, race, seed=1, 312609 операций, ошибок и race-отчётов нет, хендлы стабильны |
-| Soak, 30 минут | `scripts/stress-informix.sh soak` | попытка 1 (2026-11-02, worktree 59791b5): FAIL через 3m21s, 534807 операций - ISAM `Could not position within a file via an index` на systables (operation 8); попытка 2: FAIL через 8s - `Cannot create a user thread` на connect. Обе попытки запускались параллельно с другими live-прогонами против того же сервера (лимит ~24 соединения) - soak требует монопольного сервера; повторяется без конкуренции |
-| Soak без race | `IFX_RACE= scripts/stress-informix.sh soak` | сравнение RSS с race-прогоном; не запускался (цепочка останавливалась на первом FAIL) |
+| Soak, 30 минут | `scripts/stress-informix.sh soak` | PASS 2026-11-02 (монопольно, worktree bce8f8b): seed=1, 8 воркеров, 4298332 операций за 30m, race-отчётов нет, хендлы 1/9/8 -> 1/16/8, cleanup PASS. Неудачные попытки ранее: 3m21s ISAM-ошибка на systables и 8s `Cannot create a user thread` - обе из-за параллельных прогонов против того же сервера (лимит ~24 соединения); ещё одна остановлена внешне (контейнер БД был остановлен на хосте на ~25-й минуте прогона) |
+| Soak без race | `IFX_RACE= scripts/stress-informix.sh soak` | выполняется монопольно; сравнение RSS с race-прогоном будет записано |
 
 Время отдельной операции ограничено контекстом 5 секунд, но текущий драйвер
 не гарантирует прерывание всех ODBC-вызовов. Реальный аварийный ограничитель —
@@ -252,6 +252,11 @@ live fuzz 1 минута PASS (12081 execs, corpus 2 -> 64); gc/soak не
   `docker run -e GOEXPERIMENT=cgocheck2 ... stress-ifx 10s` PASS и до
   исправления (27161 операций), и после (27111 операций) - детектор этот
   паттерн не видит, корректность конструктивная.
+- 2026-11-02, отмена: `TestIFXCancelLockWait` PASS; smoke `stress-ifx`
+  10s PASS с `-race` и с `GOEXPERIMENT=cgocheck2` на дереве bce8f8b.
+- Вывод по инфраструктуре: soak-прогоны требуют монопольного доступа к
+  серверу Informix (лимит ~24 соединения); параллельные live-прогоны
+  дают `Cannot create a user thread` и ISAM-аномалии на каталоге.
 
 Повторить:
 
