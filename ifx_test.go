@@ -57,3 +57,52 @@ func TestIFXTime(t *testing.T) {
  
        exec(t, db, "drop table temp")
 }
+
+func TestIFXColumnTypes(t *testing.T) {
+	db, sc, err := ifxConnect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeDB(t, db, sc, sc)
+
+	db.Exec("drop table temp")
+	exec(t, db, "create table temp(id int, name varchar(20), code char(10), ts datetime year to second)")
+
+	rows, err := db.Query("select id, name, code, ts from temp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+
+	types, err := rows.ColumnTypes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ct := range types {
+		if ct.DatabaseTypeName() == "" {
+			t.Errorf("column %q: empty database type name", ct.Name())
+		}
+		t.Logf("column %q: %v", ct.Name(), ct.DatabaseTypeName())
+	}
+	for _, test := range []struct{ col, want string }{
+		{"id", "INTEGER"},
+		{"name", "VARCHAR"},
+		{"code", "CHAR"},
+	} {
+		var got string
+		for _, ct := range types {
+			if ct.Name() == test.col {
+				got = ct.DatabaseTypeName()
+				break
+			}
+		}
+		if got == "" {
+			t.Fatalf("column %q not found in result set", test.col)
+		}
+		if got != test.want {
+			t.Errorf("column %q type name: want=%v, got=%v", test.col, test.want, got)
+		}
+	}
+
+	exec(t, db, "drop table temp")
+}
