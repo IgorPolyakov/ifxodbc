@@ -202,7 +202,7 @@ live fuzz 1 минута PASS (12081 execs, corpus 2 -> 64); gc/soak не
 | Live fuzz, 1 минута | `scripts/stress-informix.sh fuzz` | PASS 2026-11-02: 12081 execs за 1m, 4 воркера, race чисто, corpus 2 -> 64 (62 new interesting); аварийных входов в testdata/fuzz не записано - corpus живёт в GOCACHE контейнера и не сохранён |
 | GC pressure | `scripts/stress-informix.sh gc` | PASS 2026-11-02 (с закреплением Pinner): GOGC=1, GOMEMLIMIT=200MiB, race, seed=1, 312609 операций, ошибок и race-отчётов нет, хендлы стабильны |
 | Soak, 30 минут | `scripts/stress-informix.sh soak` | PASS 2026-11-02 (монопольно, worktree bce8f8b): seed=1, 8 воркеров, 4298332 операций за 30m, race-отчётов нет, хендлы 1/9/8 -> 1/16/8, cleanup PASS. Неудачные попытки ранее: 3m21s ISAM-ошибка на systables и 8s `Cannot create a user thread` - обе из-за параллельных прогонов против того же сервера (лимит ~24 соединения); ещё одна остановлена внешне (контейнер БД был остановлен на хосте на ~25-й минуте прогона) |
-| Soak без race | `IFX_RACE= scripts/stress-informix.sh soak` | выполняется монопольно; сравнение RSS с race-прогоном будет записано |
+| Soak без race | `IFX_RACE= scripts/stress-informix.sh soak` | PASS 2026-11-02 (монопольно, worktree bce8f8b): 4579280 операций за 30m, ошибок нет, хендлы стабильны; без race примерно на 6.5% быстрее race-прогона (4298332). Внешние сэмплы RSS/FD не снимались - контроль RSS/FD остаётся открытой задачей инфраструктуры |
 
 Время отдельной операции ограничено контекстом 5 секунд, но текущий драйвер
 не гарантирует прерывание всех ODBC-вызовов. Реальный аварийный ограничитель —
