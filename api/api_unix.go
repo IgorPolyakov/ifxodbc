@@ -90,6 +90,11 @@ const (
 	SQL_SS_XML   = -152
 	SQL_SS_TIME2 = -154
 
+	// Informix ODBC driver reports BIGINT and BIGSERIAL columns as
+	// SQL_INFX_BIGINT instead of the standard SQL_BIGINT
+	// (Informix ODBC Driver Programmer's Manual, standard SQL data types).
+	SQL_INFX_BIGINT = -114
+
 	SQL_C_CHAR           = C.SQL_C_CHAR
 	SQL_C_LONG           = C.SQL_C_LONG
 	SQL_C_SHORT          = C.SQL_C_SHORT

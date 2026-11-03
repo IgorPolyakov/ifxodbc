@@ -104,7 +104,7 @@ func NewColumn(h api.SQLHSTMT, idx int) (Column, error) {
 		return NewBindableColumn(b, api.SQL_C_BIT, 1), nil
 	case api.SQL_TINYINT, api.SQL_SMALLINT, api.SQL_INTEGER:
 		return NewBindableColumn(b, api.SQL_C_LONG, 4), nil
-	case api.SQL_BIGINT:
+	case api.SQL_BIGINT, api.SQL_INFX_BIGINT:
 		return NewBindableColumn(b, api.SQL_C_SBIGINT, 8), nil
 	// NUMERIC and DECIMAL are exact numeric types: converting them through
 	// float64 can lose precision for values with more than 15-17
@@ -199,7 +199,7 @@ func (c *BaseColumn) DatabaseTypeName() string {
 		return "VARBINARY"
 	case api.SQL_LONGVARBINARY:
 		return "LONGVARBINARY"
-	case api.SQL_BIGINT:
+	case api.SQL_BIGINT, api.SQL_INFX_BIGINT:
 		return "BIGINT"
 	case api.SQL_TINYINT:
 		return "TINYINT"
