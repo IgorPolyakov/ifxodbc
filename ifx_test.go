@@ -62,6 +62,41 @@ func TestIFXTime(t *testing.T) {
 	exec(t, db, "drop table temp")
 }
 
+func TestIFXBigint(t *testing.T) {
+	db, sc, err := ifxConnect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeDB(t, db, sc, sc)
+
+	db.Exec("drop table temp")
+	// The Informix ODBC driver reports BIGINT columns as SQL_INFX_BIGINT
+	// (-114), not SQL_BIGINT; reading them must still yield int64 values.
+	exec(t, db, "create table temp(id int, big bigint)")
+	defer exec(t, db, "drop table temp")
+
+	const edge = int64(9223372036854775807)
+	if _, err := db.Exec("insert into temp (id, big) values (1, ?)", edge); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("insert into temp (id, big) values (2, ?)", -edge); err != nil {
+		t.Fatal(err)
+	}
+	var got, neg int64
+	if err := db.QueryRow("select big from temp where id = 1").Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got != edge {
+		t.Errorf("bigint max: want=%d, is=%d", edge, got)
+	}
+	if err := db.QueryRow("select big from temp where id = 2").Scan(&neg); err != nil {
+		t.Fatal(err)
+	}
+	if neg != -edge {
+		t.Errorf("bigint min: want=%d, is=%d", -edge, neg)
+	}
+}
+
 func TestIFXBeginErr(t *testing.T) {
 	before := ifxStressHandles()
 	dsn := fmt.Sprintf("driver=IBM INFORMIX ODBC DRIVER;server=%s;database=%s;uid=%s;pwd=%s",
